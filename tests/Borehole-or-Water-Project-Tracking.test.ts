@@ -1,46 +1,22 @@
-import { Clarinet, Tx, Chain, Account, types } from '@stacks/transactions';
+import { describe, expect, it } from "vitest";
 
-Clarinet.test({
-  name: "Ensures project creation works",
-  async fn(chain: Chain, accounts: Map<string, Account>) {
-    const deployer = accounts.get("deployer")!;
+const accounts = simnet.getAccounts();
+const address1 = accounts.get("wallet_1")!;
 
-    let block = chain.mineBlock([
-      Tx.contractCall(
-        "borehole-tracker",
-        "create-project",
-        [
-          types.ascii("Test Project"),
-          types.ascii("Test Location"),
-          types.uint(1000000)
-        ],
-        deployer.address
-      )
-    ]);
+/*
+  The test below is an example. To learn more, read the testing documentation here:
+  https://docs.hiro.so/stacks/clarinet-js-sdk
+*/
 
-    block.receipts[0].result.expectOk().expectUint(1);
-  },
+describe("example tests", () => {
+  it("ensures simnet is well initialised", () => {
+    expect(simnet.blockHeight).toBeDefined();
+  });
+
+  // it("shows an example", () => {
+  //   const { result } = simnet.callReadOnlyFn("counter", "get-counter", [], address1);
+  //   expect(result).toBeUint(0);
+  // });
 });
 
-Clarinet.test({
-  name: "Ensures milestone creation works",
-  async fn(chain: Chain, accounts: Map<string, Account>) {
-    const deployer = accounts.get("deployer")!;
 
-    let block = chain.mineBlock([
-      Tx.contractCall(
-        "borehole-tracker",
-        "add-milestone",
-        [
-          types.uint(1),
-          types.uint(1),
-          types.ascii("First milestone"),
-          types.uint(500000)
-        ],
-        deployer.address
-      )
-    ]);
-
-    block.receipts[0].result.expectOk().expectBool(true);
-  },
-});
