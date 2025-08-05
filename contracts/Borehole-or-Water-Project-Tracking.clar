@@ -542,3 +542,180 @@
         err-not-found
     ))
 )
+
+(define-constant err-update-not-found (err u400))
+(define-constant err-already-verified (err u401))
+(define-constant err-invalid-update-status (err u402))
+
+(define-map project-updates
+    { update-id: uint }
+    {
+        project-id: uint,
+        title: (string-ascii 100),
+        content: (string-ascii 500),
+        media-url: (string-ascii 200),
+        posted-height: uint,
+        poster: principal,
+        verification-count: uint,
+        verification-weight: uint,
+        status: (string-ascii 20),
+    }
+)
+
+(define-map update-verifications
+    {
+        update-id: uint,
+        verifier: principal,
+    }
+    {
+        weight: uint,
+        verified-height: uint,
+        authentic: bool,
+    }
+)
+
+(define-data-var update-counter uint u0)
+(define-constant min-verification-threshold u500000)
+
+(define-public (post-project-update
+        (project-id uint)
+        (title (string-ascii 100))
+        (content (string-ascii 500))
+        (media-url (string-ascii 200))
+    )
+    (let (
+            (update-id (+ (var-get update-counter) u1))
+            (project (unwrap! (map-get? projects { project-id: project-id }) err-not-found))
+        )
+        (asserts! (is-eq tx-sender (get owner project)) err-owner-only)
+        (map-set project-updates { update-id: update-id } {
+            project-id: project-id,
+            title: title,
+            content: content,
+            media-url: media-url,
+            posted-height: burn-block-height,
+            poster: tx-sender,
+            verification-count: u0,
+            verification-weight: u0,
+            status: "unverified",
+        })
+        (var-set update-counter update-id)
+        (ok update-id)
+    )
+)
+
+(define-public (verify-project-update
+        (update-id uint)
+        (authentic bool)
+    )
+    (let (
+            (update (unwrap! (map-get? project-updates { update-id: update-id })
+                err-update-not-found
+            ))
+            (project-id (get project-id update))
+            (funder-info (unwrap!
+                (map-get? project-funders {
+                    project-id: project-id,
+                    funder: tx-sender,
+                })
+                err-not-funder
+            ))
+            (verification-weight (get amount funder-info))
+        )
+        (asserts!
+            (is-none (map-get? update-verifications {
+                update-id: update-id,
+                verifier: tx-sender,
+            }))
+            err-already-verified
+        )
+        (asserts! (>= verification-weight min-verification-threshold)
+            err-insufficient-funds
+        )
+        (map-set update-verifications {
+            update-id: update-id,
+            verifier: tx-sender,
+        } {
+            weight: verification-weight,
+            verified-height: burn-block-height,
+            authentic: authentic,
+        })
+        (let ((new-weight (if authentic
+                (+ (get verification-weight update) verification-weight)
+                (get verification-weight update)
+            )))
+            (map-set project-updates { update-id: update-id }
+                (merge update {
+                    verification-count: (+ (get verification-count update) u1),
+                    verification-weight: new-weight,
+                    status: (if (and authentic (>= new-weight
+                            (/
+                                (*
+                                    (get current-amount
+                                        (unwrap!
+                                            (map-get? projects { project-id: project-id })
+                                            err-not-found
+                                        ))
+                                    u10
+                                )
+                                u100
+                            )))
+                        "verified"
+                        (get status update)
+                    ),
+                })
+            )
+        )
+        (ok true)
+    )
+)
+
+(define-public (flag-update-disputed (update-id uint))
+    (let (
+            (update (unwrap! (map-get? project-updates { update-id: update-id })
+                err-update-not-found
+            ))
+            (project-id (get project-id update))
+            (funder-info (unwrap!
+                (map-get? project-funders {
+                    project-id: project-id,
+                    funder: tx-sender,
+                })
+                err-not-funder
+            ))
+        )
+        (asserts! (>= (get amount funder-info) min-dispute-amount)
+            err-insufficient-funds
+        )
+        (asserts! (not (is-eq (get status update) "disputed"))
+            err-invalid-update-status
+        )
+        (map-set project-updates { update-id: update-id }
+            (merge update { status: "disputed" })
+        )
+        (ok true)
+    )
+)
+
+(define-read-only (get-project-update (update-id uint))
+    (ok (unwrap! (map-get? project-updates { update-id: update-id })
+        err-update-not-found
+    ))
+)
+
+(define-read-only (get-update-verification
+        (update-id uint)
+        (verifier principal)
+    )
+    (ok (unwrap!
+        (map-get? update-verifications {
+            update-id: update-id,
+            verifier: verifier,
+        })
+        err-not-found
+    ))
+)
+
+(define-read-only (get-update-counter)
+    (ok (var-get update-counter))
+)
