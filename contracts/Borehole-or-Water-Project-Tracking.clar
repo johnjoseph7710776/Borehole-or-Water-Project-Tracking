@@ -719,3 +719,192 @@
 (define-read-only (get-update-counter)
     (ok (var-get update-counter))
 )
+
+(define-constant err-invalid-rating (err u500))
+(define-constant err-already-rated (err u501))
+(define-constant err-project-not-completed (err u502))
+(define-constant min-rating-threshold u100000)
+
+(define-map project-ratings
+    {
+        project-id: uint,
+        rater: principal,
+    }
+    {
+        rating: uint,
+        weight: uint,
+        rating-height: uint,
+    }
+)
+
+(define-map project-rating-stats
+    { project-id: uint }
+    {
+        total-rating-weight: uint,
+        weighted-rating-sum: uint,
+        rating-count: uint,
+        average-rating: uint,
+    }
+)
+
+(define-map owner-reputation
+    { owner: principal }
+    {
+        total-projects: uint,
+        total-weighted-rating: uint,
+        total-weight: uint,
+        reputation-score: uint,
+    }
+)
+
+(define-public (rate-project
+        (project-id uint)
+        (rating uint)
+    )
+    (let (
+            (project (unwrap! (map-get? projects { project-id: project-id }) err-not-found))
+            (funder-info (unwrap!
+                (map-get? project-funders {
+                    project-id: project-id,
+                    funder: tx-sender,
+                })
+                err-not-funder
+            ))
+            (rating-weight (get amount funder-info))
+            (project-owner (get owner project))
+        )
+        (asserts! (and (>= rating u1) (<= rating u5)) err-invalid-rating)
+        (asserts! (is-eq (get status project) "completed")
+            err-project-not-completed
+        )
+        (asserts! (>= rating-weight min-rating-threshold) err-insufficient-funds)
+        (asserts!
+            (is-none (map-get? project-ratings {
+                project-id: project-id,
+                rater: tx-sender,
+            }))
+            err-already-rated
+        )
+        (map-set project-ratings {
+            project-id: project-id,
+            rater: tx-sender,
+        } {
+            rating: rating,
+            weight: rating-weight,
+            rating-height: burn-block-height,
+        })
+        (let (
+                (current-stats (default-to {
+                    total-rating-weight: u0,
+                    weighted-rating-sum: u0,
+                    rating-count: u0,
+                    average-rating: u0,
+                }
+                    (map-get? project-rating-stats { project-id: project-id })
+                ))
+                (new-weight-sum (+ (get total-rating-weight current-stats) rating-weight))
+                (new-rating-sum (+ (get weighted-rating-sum current-stats)
+                    (* rating rating-weight)
+                ))
+                (new-average (/ new-rating-sum new-weight-sum))
+            )
+            (map-set project-rating-stats { project-id: project-id } {
+                total-rating-weight: new-weight-sum,
+                weighted-rating-sum: new-rating-sum,
+                rating-count: (+ (get rating-count current-stats) u1),
+                average-rating: new-average,
+            })
+            (let (
+                    (current-reputation (default-to {
+                        total-projects: u0,
+                        total-weighted-rating: u0,
+                        total-weight: u0,
+                        reputation-score: u0,
+                    }
+                        (map-get? owner-reputation { owner: project-owner })
+                    ))
+                    (updated-weight (+ (get total-weight current-reputation) rating-weight))
+                    (updated-rating-sum (+ (get total-weighted-rating current-reputation)
+                        (* rating rating-weight)
+                    ))
+                    (new-reputation-score (if (> updated-weight u0)
+                        (/ updated-rating-sum updated-weight)
+                        u0
+                    ))
+                )
+                (map-set owner-reputation { owner: project-owner } {
+                    total-projects: (+ (get total-projects current-reputation) u1),
+                    total-weighted-rating: updated-rating-sum,
+                    total-weight: updated-weight,
+                    reputation-score: new-reputation-score,
+                })
+            )
+        )
+        (ok true)
+    )
+)
+
+(define-public (batch-rate-projects (ratings (list 10 {
+    project-id: uint,
+    rating: uint,
+})))
+    (ok (map rate-single-project ratings))
+)
+
+(define-private (rate-single-project (rating-data {
+    project-id: uint,
+    rating: uint,
+}))
+    (rate-project (get project-id rating-data) (get rating rating-data))
+)
+
+(define-read-only (get-project-rating (project-id uint))
+    (ok (default-to {
+        total-rating-weight: u0,
+        weighted-rating-sum: u0,
+        rating-count: u0,
+        average-rating: u0,
+    }
+        (map-get? project-rating-stats { project-id: project-id })
+    ))
+)
+
+(define-read-only (get-owner-reputation (owner principal))
+    (ok (default-to {
+        total-projects: u0,
+        total-weighted-rating: u0,
+        total-weight: u0,
+        reputation-score: u0,
+    }
+        (map-get? owner-reputation { owner: owner })
+    ))
+)
+
+(define-read-only (get-funder-project-rating
+        (project-id uint)
+        (rater principal)
+    )
+    (ok (unwrap!
+        (map-get? project-ratings {
+            project-id: project-id,
+            rater: rater,
+        })
+        err-not-found
+    ))
+)
+
+(define-read-only (calculate-trust-score
+        (owner principal)
+        (min-projects uint)
+    )
+    (let (
+            (reputation (unwrap! (map-get? owner-reputation { owner: owner }) err-not-found))
+            (project-count (get total-projects reputation))
+            (rep-score (get reputation-score reputation))
+        )
+        (ok (if (>= project-count min-projects)
+            (* rep-score (/ project-count (+ project-count u1)))
+            (/ rep-score u2)
+        ))
+    )
+)
